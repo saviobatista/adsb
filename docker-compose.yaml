@@ -1,0 +1,98 @@
+# Define the Docker network
+networks:
+  adsb_network:
+    driver: bridge
+
+services:
+  queue:
+    image: rabbitmq:3-management
+    container_name: queue
+    ports:
+      - "5672:5672"   # Message broker
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-user}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-password}
+    networks:
+      - adsb_network
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+    restart: always
+
+  live:
+    image: redis:alpine
+    container_name: live
+    ports:
+      - "6379:6379"
+    networks:
+      - adsb_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - live:/data
+    restart: always
+
+  history:
+    image: mongo:latest
+    container_name: history
+    ports:
+      - "27017:27017"
+    networks:
+      - adsb_network
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+
+  producer:
+    build:
+      context: ./producer
+    container_name: producer
+    environment:
+      RUST_LOG: info
+      MESSAGE_QUEUE_HOST: queue
+      QUEUE_NAME: adsb_data
+      ADSB_SERVER: ${ADSB_SERVER}
+    depends_on:
+      - queue
+    networks:
+      - adsb_network
+
+  consumer:
+    build:
+      context: ./consumer
+    container_name: consumer
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      MESSAGE_QUEUE_HOST: queue
+      QUEUE_NAME: adsb_data
+      NOSQL_DB_HOST: history
+      NOSQL_DB_NAME: adsb_historical
+      REDIS_HOST: live
+      LOG_FILE: /logs/adsb.log
+      RABBITMQ_USER: ${RABBITMQ_USER:-user}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:-password}
+    depends_on:
+      - queue
+      - history
+      - live
+    networks:
+      - adsb_network
+    volumes:
+      - logs:/logs
+
+# Define persistent volumes
+volumes:
+  logs:
+  mongo_data:
+  live:
